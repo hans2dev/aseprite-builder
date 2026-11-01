@@ -39,7 +39,7 @@ Aseprite is "source-available" software. This means while the pre-made versions 
 #### Option B: Build Single Platform
 1. Fork the repository
 2. Go to **Actions** → select your platform:
-   - **"Build Aseprite"** → Windows only
+   - **"Build Aseprite"** → Windows only (portable ZIP + Setup.exe installer, optional version input)
    - **"Build Aseprite (Linux)"** → Linux only
 3. Click **Run workflow**
 4. Download from **Releases** when complete
@@ -47,11 +47,11 @@ Aseprite is "source-available" software. This means while the pre-made versions 
 ### Method 2: Local Build
 
 #### Windows
-1. Ensure you have **Visual Studio 2022**, **CMake**, and **Ninja** installed
+1. Install **Visual Studio 2022** (or Build Tools) with the *Desktop development with C++* workload, plus **CMake** and **Ninja** (`choco install cmake ninja`)
 2. Download or clone this repository
-3. Open Command Prompt and run: `aseprite_build.bat`
-4. The script runs as Administrator and handles everything
-5. Find the build in `workspace/installer/`
+3. Open Command Prompt and run: `aseprite_build.bat` (or `aseprite_build.bat v1.3.17` for a specific version)
+4. The script loads the MSVC x64 environment automatically
+5. Find the build in `workspace/dist/` (installer is created too if Inno Setup 6 is installed)
 
 #### Linux
 1. Clone this repository: `git clone <repo-url>`
@@ -110,17 +110,16 @@ Aseprite is "source-available" software. This means while the pre-made versions 
 
 ### Windows (aseprite_build.bat)
 Non-interactive batch script that:
-- Automatically installs CMake, Ninja via Chocolatey
-- Detects Visual Studio 2022/2019 installation
+- Checks for CMake / Ninja and loads the Visual Studio x64 toolchain (via `vswhere` + `VsDevCmd`)
 - Downloads latest Aseprite source (or specified version)
-- Downloads Skia library for Windows
+- Downloads the exact Skia build required by that version (`laf/misc/skia-tag.txt`)
 - Compiles with parallel jobs (auto-detects CPU cores)
-- Creates portable ZIP
-- Works in both local and GitHub Actions environments
+- Creates portable ZIP and, if Inno Setup 6 is available, an installer
 
 **Usage:**
 ```batch
 aseprite_build.bat
+aseprite_build.bat v1.3.17
 ```
 
 ### Linux/macOS (aseprite_build.sh)
@@ -154,8 +153,8 @@ chmod +x aseprite_build.sh
 
 ### 1. `build.yml` - Windows Build
 - **Runs on:** `windows-latest`
-- **Output:** Portable ZIP file
-- **Trigger:** Manual via workflow dispatch
+- **Output:** Portable ZIP + Inno Setup installer (`Setup.exe`)
+- **Trigger:** Manual via workflow dispatch (optional version / release toggle)
 - **Time:** ~30-40 minutes
 
 ### 2. `build-linux.yml` - Linux Build
@@ -181,7 +180,7 @@ Parallel matrix build with:
 
 ### Windows
 ```
-Aseprite-vX.X.X-Windows.zip
+Aseprite-vX.X.X-Windows-x64.zip
   ├── aseprite.exe
   ├── data/
   └── aseprite.ini
@@ -261,8 +260,11 @@ Extract and double-click `Aseprite.app` or add to Applications
 - **"Visual Studio not found"**
   - Solution: Install Visual Studio 2022 Build Tools or full version
   
-- **"CMake not found"**
-  - Solution: Ensure Chocolatey is installed; script tries to auto-install
+- **"CMake not found" / "Ninja not found"**
+  - Solution: `choco install cmake ninja` (or install manually and add to PATH)
+
+- **CMake error: `Cannot find source file ... icudtl.dat`**
+  - Cause: Skia version mismatch. The scripts now download the Skia tag listed in `laf/misc/skia-tag.txt` (currently `m124-08a5439a6b`)
   
 - **"Build failed"**
   - Try running as Administrator: Right-click → "Run as Administrator"

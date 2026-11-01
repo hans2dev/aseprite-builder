@@ -55,13 +55,14 @@ jobs:
       - name: Download & Extract Skia
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Windows-Release-x64.zip" -OutFile "skia.zip" -UseBasicParsing
+          $ErrorActionPreference = 'Stop'
+          $tagFile = 'aseprite\laf\misc\skia-tag.txt'
+          $skiaTag = if (Test-Path $tagFile) { (Get-Content $tagFile -Raw).Trim() } else { 'm124-08a5439a6b' }
+          Write-Host "Skia tag: $skiaTag"
+          Invoke-WebRequest -Uri "https://github.com/aseprite/skia/releases/download/$skiaTag/Skia-Windows-Release-x64.zip" -OutFile "skia.zip" -UseBasicParsing
           Expand-Archive -Force "skia.zip" "skia"
-          
-          # Download icudtl.dat (required for ICU support)
-          mkdir skia\out\Release-x64 -Force
-          Invoke-WebRequest -Uri "https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/icudtl.dat" -OutFile "skia/out/Release-x64/icudtl.dat" -UseBasicParsing
-          Write-Host "Skia extracted successfully with icudtl.dat"
+          if (-not (Test-Path 'skia\out\Release-x64\skia.lib')) { throw 'skia.lib not found' }
+          Write-Host "Skia extracted successfully"
 
       - name: Initialize MSVC Environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -77,15 +78,16 @@ jobs:
             -DSKIA_DIR="$env:GITHUB_WORKSPACE\skia" `
             -DSKIA_LIBRARY_DIR="$env:GITHUB_WORKSPACE\skia\out\Release-x64" `
             -DSKIA_LIBRARY="$env:GITHUB_WORKSPACE\skia\out\Release-x64\skia.lib" `
-            -DENABLE_SCRIPTING=OFF `
             -DENABLE_UPDATER=OFF `
             -DENABLE_TESTS=OFF `
             "$env:GITHUB_WORKSPACE\aseprite"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed" }
 
       - name: Compile
         run: |
           cd build
-          ninja -j 4
+          ninja -j $env:NUMBER_OF_PROCESSORS
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
       - name: Create Portable Package
         shell: powershell
@@ -124,9 +126,12 @@ jobs:
 
       - name: Download & Extract Skia
         run: |
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Linux-Release-x64-libstdc++.zip
-          unzip Skia-Linux-Release-x64-libstdc++.zip -d skia
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/icudtl.dat -O skia/out/Release-x64/icudtl.dat
+          set -euo pipefail
+          SKIA_TAG=$(tr -d '[:space:]' < aseprite/laf/misc/skia-tag.txt 2>/dev/null || echo m124-08a5439a6b)
+          echo "Skia tag: $SKIA_TAG"
+          curl -fsSL -o skia.zip "https://github.com/aseprite/skia/releases/download/$SKIA_TAG/Skia-Linux-Release-x64-libstdc++.zip"
+          unzip -q skia.zip -d skia
+          test -f skia/third_party/externals/icu/flutter/icudtl.dat || echo "::warning::icudtl.dat missing"
 
       - name: Configure Build
         run: |
@@ -222,9 +227,12 @@ jobs:
 
       - name: Download & Extract Skia
         run: |
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-arm64.zip
-          unzip Skia-macOS-Release-arm64.zip -d skia
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/icudtl.dat -O skia/out/Release-arm64/icudtl.dat
+          set -euo pipefail
+          SKIA_TAG=$(tr -d '[:space:]' < aseprite/laf/misc/skia-tag.txt 2>/dev/null || echo m124-08a5439a6b)
+          echo "Skia tag: $SKIA_TAG"
+          curl -fsSL -o skia.zip "https://github.com/aseprite/skia/releases/download/$SKIA_TAG/Skia-macOS-Release-arm64.zip"
+          unzip -q skia.zip -d skia
+          test -f skia/third_party/externals/icu/flutter/icudtl.dat || echo "::warning::icudtl.dat missing"
 
       - name: Configure Build
         run: |
@@ -277,9 +285,12 @@ jobs:
 
       - name: Download & Extract Skia
         run: |
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-x64.zip
-          unzip Skia-macOS-Release-x64.zip -d skia
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/icudtl.dat -O skia/out/Release-x64/icudtl.dat
+          set -euo pipefail
+          SKIA_TAG=$(tr -d '[:space:]' < aseprite/laf/misc/skia-tag.txt 2>/dev/null || echo m124-08a5439a6b)
+          echo "Skia tag: $SKIA_TAG"
+          curl -fsSL -o skia.zip "https://github.com/aseprite/skia/releases/download/$SKIA_TAG/Skia-macOS-Release-x64.zip"
+          unzip -q skia.zip -d skia
+          test -f skia/third_party/externals/icu/flutter/icudtl.dat || echo "::warning::icudtl.dat missing"
 
       - name: Configure Build
         run: |

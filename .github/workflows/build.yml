@@ -1,12 +1,29 @@
 ﻿name: Build Aseprite
+
 on:
   workflow_dispatch:
+    inputs:
+      aseprite_version:
+        description: 'Aseprite version tag (e.g. v1.3.17). Leave empty for latest release'
+        required: false
+        default: ''
+      create_release:
+        description: 'Create GitHub Release'
+        type: boolean
+        required: false
+        default: true
 
 jobs:
   build:
+    name: Build Windows (x64)
     runs-on: windows-latest
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      ASE_VER_INPUT: ${{ github.event.inputs.aseprite_version }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -15,121 +32,177 @@ jobs:
         run: git config --system core.longpaths true
 
       - name: Install Build Tools
-        run: choco install cmake ninja innosetup -y --no-progress
+        run: choco install ninja innosetup -y --no-progress
 
-      - name: Fetch Latest Release Metadata
-        shell: powershell
+      - name: Resolve Aseprite Version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $headers = @{}
-          if ($env:GH_TOKEN) { $headers["Authorization"] = "token $env:GH_TOKEN" }
-          $resp = (Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri https://api.github.com/repos/aseprite/aseprite/releases/latest -ErrorAction Stop).Content | ConvertFrom-Json
-          $asset = $resp.assets | Where-Object { $_.name -like "*Source.zip" } | Select-Object -First 1
-          if (-not $asset) {
-              $asset = $resp.assets | Select-Object -First 1
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ 'User-Agent' = 'aseprite-builder' }
+          if ($env:GH_TOKEN) { $headers['Authorization'] = "Bearer $env:GH_TOKEN" }
+
+          if ($env:ASE_VER_INPUT) {
+            $ver = $env:ASE_VER_INPUT.Trim()
+          } else {
+            $rel = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/aseprite/aseprite/releases/latest'
+            $ver = $rel.tag_name
           }
-          echo "DOWNLOAD_URL=$($asset.browser_download_url)" >> $env:GITHUB_ENV
-          echo "ASE_VER=$($resp.tag_name)" >> $env:GITHUB_ENV
-          echo "Detected Aseprite version: $($resp.tag_name)"
-          echo "Source asset: $($asset.name)"
+          if (-not $ver) { throw 'Could not resolve Aseprite version' }
 
-      - name: Download & Extract Source
-        shell: powershell
-        run: |
-          Invoke-WebRequest -Uri ${{ env.DOWNLOAD_URL }} -OutFile "aseprite_src.zip" -UseBasicParsing
-          Expand-Archive -Force "aseprite_src.zip" "temp_ext"
-          $rootFile = Get-ChildItem -Path "temp_ext" -Filter "CMakeLists.txt" -Recurse | Select-Object -First 1
-          mkdir aseprite -Force
-          Get-ChildItem -Path "$($rootFile.Directory.FullName)\*" | Move-Item -Destination "aseprite" -Force
-          Write-Host "Source extracted successfully"
+          "ASE_VER=$ver" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Aseprite version: $ver"
 
-      - name: Download & Extract Skia
-        shell: powershell
+      - name: Download Aseprite Source
         run: |
-          Invoke-WebRequest -Uri "https://github.com/aseprite/skia/releases/download/m102-861e4743af/Skia-Windows-Release-x64.zip" -OutFile "skia.zip" -UseBasicParsing
-          mkdir skia -Force
-          Expand-Archive -Force "skia.zip" "skia"
-          Write-Host "Skia extracted successfully"
+          $ErrorActionPreference = 'Stop'
+          # Release "Source.zip" already contains all submodules (laf, third_party, ...)
+          $url = "https://github.com/aseprite/aseprite/releases/download/$env:ASE_VER/Aseprite-$env:ASE_VER-Source.zip"
+          Write-Host "Downloading $url"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile aseprite_src.zip -UseBasicParsing
+            New-Item -ItemType Directory -Force aseprite | Out-Null
+            Expand-Archive -Force aseprite_src.zip aseprite
+            # Flatten if the zip has a single top-level folder
+            if (-not (Test-Path aseprite\CMakeLists.txt)) {
+              $root = Get-ChildItem aseprite -Filter CMakeLists.txt -Recurse -Depth 1 | Select-Object -First 1
+              Get-ChildItem "$($root.Directory.FullName)\*" -Force | Move-Item -Destination aseprite -Force
+            }
+          } catch {
+            Write-Host "Source.zip not available ($_). Falling back to git clone --recursive"
+            Remove-Item -Recurse -Force aseprite -ErrorAction SilentlyContinue
+            git clone --recursive --depth 1 --branch $env:ASE_VER https://github.com/aseprite/aseprite.git aseprite
+            if ($LASTEXITCODE -ne 0) { throw 'git clone failed' }
+          }
+          if (-not (Test-Path aseprite\laf\CMakeLists.txt)) { throw 'laf submodule missing from source' }
+          Write-Host 'Source ready'
+
+      - name: Download Skia
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Use the exact Skia build required by this Aseprite version
+          $tagFile = 'aseprite\laf\misc\skia-tag.txt'
+          if (Test-Path $tagFile) {
+            $skiaTag = (Get-Content $tagFile -Raw).Trim()
+          } else {
+            $skiaTag = 'm124-08a5439a6b'
+          }
+          Write-Host "Skia tag: $skiaTag"
+          $url = "https://github.com/aseprite/skia/releases/download/$skiaTag/Skia-Windows-Release-x64.zip"
+          Invoke-WebRequest -Uri $url -OutFile skia.zip -UseBasicParsing
+          Expand-Archive -Force skia.zip skia
+
+          if (-not (Test-Path 'skia\out\Release-x64\skia.lib')) { throw 'skia.lib not found' }
+          if (-not (Test-Path 'skia\third_party\externals\icu\flutter\icudtl.dat')) {
+            Write-Host '::warning::icudtl.dat not found in Skia package (older Skia?)'
+          }
+          Write-Host 'Skia ready'
 
       - name: Initialize MSVC Environment
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-      - name: Run CMake Configuration
-        shell: powershell
+      - name: Configure (CMake)
         run: |
-          $abs_src = Join-Path $env:GITHUB_WORKSPACE "aseprite"
-          $abs_skia = Join-Path $env:GITHUB_WORKSPACE "skia"
-          $abs_build = Join-Path $env:GITHUB_WORKSPACE "build"
-          mkdir $abs_build -Force
-          Set-Location $abs_build
-          cmake -G Ninja `
+          $src  = Join-Path $env:GITHUB_WORKSPACE 'aseprite'
+          $skia = Join-Path $env:GITHUB_WORKSPACE 'skia'
+          $out  = Join-Path $env:GITHUB_WORKSPACE 'build'
+          cmake -S "$src" -B "$out" -G Ninja `
             -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
             -DLAF_BACKEND=skia `
-            -DSKIA_DIR="$abs_skia" `
-            -DSKIA_LIBRARY_DIR="$abs_skia\out\Release-x64" `
-            -DSKIA_LIBRARY="$abs_skia\out\Release-x64\skia.lib" `
+            -DSKIA_DIR="$skia" `
+            -DSKIA_LIBRARY_DIR="$skia\out\Release-x64" `
+            -DSKIA_LIBRARY="$skia\out\Release-x64\skia.lib" `
             -DENABLE_UPDATER=OFF `
-            -DENABLE_TESTS=OFF `
-            "$abs_src"
-          Write-Host "CMake configuration completed"
+            -DENABLE_TESTS=OFF
+          if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed ($LASTEXITCODE)" }
 
-      - name: Compile with Ninja
+      - name: Compile (Ninja)
         run: |
-          cd build
-          $cpuCount = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
-          $jobs = [math]::Min($cpuCount * 2, 8)
-          Write-Host "Using $jobs parallel compilation jobs"
-          ninja -j $jobs
+          $jobs = [Environment]::ProcessorCount
+          Write-Host "Using $jobs parallel jobs"
+          cmake --build build --config RelWithDebInfo -- -j $jobs
+          if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)" }
+          if (-not (Test-Path build\bin\aseprite.exe)) { throw 'aseprite.exe not produced' }
 
-      - name: Collect Dependencies (DLLs)
-        shell: powershell
+      - name: Prepare Package
         run: |
-          $binDir = "$env:GITHUB_WORKSPACE\build\bin"
-          $sslDir = "C:\Program Files\OpenSSL\bin"
-          if (Test-Path "$sslDir\libcrypto-3-x64.dll") {
-              Copy-Item "$sslDir\libcrypto-3-x64.dll" -Destination $binDir -Force
-              Copy-Item "$sslDir\libssl-3-x64.dll" -Destination $binDir -Force
-              echo "[+] DLLs copied to $binDir"
-          } else {
-              echo "[!] OpenSSL DLLs not found - skipping"
-          }
+          $ErrorActionPreference = 'Stop'
+          $bin = 'build\bin'
+          New-Item -ItemType Directory -Force package | Out-Null
+          # Ship runtime files only (skip debug symbols / link artifacts / build tools)
+          $exclude = @('*.pdb', '*.ilk', '*.exp', '*.lib', 'gen.exe')
+          Copy-Item "$bin\*" package\ -Recurse -Exclude $exclude
+          Get-ChildItem package
 
-      - name: Package Installer (Inno Setup)
-        shell: powershell
+      - name: Create Portable ZIP
         run: |
-          $binPath = Join-Path $env:GITHUB_WORKSPACE "build\bin"
+          $ErrorActionPreference = 'Stop'
+          $portable = 'portable'
+          Copy-Item package $portable -Recurse
+          '# This file is here so Aseprite behaves as a portable program' |
+            Out-File "$portable\aseprite.ini" -Encoding ascii
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$portable\*" -DestinationPath "dist\Aseprite-$env:ASE_VER-Windows-x64.zip"
+
+      - name: Create Installer (Inno Setup)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = Join-Path $env:GITHUB_WORKSPACE 'package'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
           $iss = @"
           [Setup]
           AppName=Aseprite
-          AppVersion=${{ env.ASE_VER }}
+          AppVersion=$env:ASE_VER
           DefaultDirName={autopf}\Aseprite
           DefaultGroupName=Aseprite
-          OutputBaseFilename=aseprite-setup
-          OutputDir=installer
-          Compression=lzma
+          UninstallDisplayIcon={app}\aseprite.exe
+          OutputBaseFilename=Aseprite-$env:ASE_VER-Windows-x64-Setup
+          OutputDir=$dist
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          Compression=lzma2
           SolidCompression=yes
+
+          [Tasks]
+          Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
           [Files]
-          Source: "$binPath\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          Source: "$pkg\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
           [Icons]
           Name: "{group}\Aseprite"; Filename: "{app}\aseprite.exe"
-          "@
-          mkdir installer -Force
-          $iss | Out-File -FilePath "aseprite.iss" -Encoding utf8
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" aseprite.iss
+          Name: "{autodesktop}\Aseprite"; Filename: "{app}\aseprite.exe"; Tasks: desktopicon
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: success()
-        with:
-          tag_name: ${{ env.ASE_VER }}
-          name: Aseprite ${{ env.ASE_VER }}
-          files: installer/*.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          [Run]
+          Filename: "{app}\aseprite.exe"; Description: "{cm:LaunchProgram,Aseprite}"; Flags: nowait postinstall skipifsilent
+          "@
+          $iss | Out-File aseprite.iss -Encoding utf8
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" aseprite.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
+          Get-ChildItem dist
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Aseprite-Installer
-          path: installer/*.exe
+          name: Aseprite-${{ env.ASE_VER }}-Windows-x64
+          path: dist/*
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.create_release != 'false' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.ASE_VER }}
+          name: Aseprite ${{ env.ASE_VER }}
+          body: |
+            Aseprite ${{ env.ASE_VER }} - Windows x64 build
+
+            - `Aseprite-${{ env.ASE_VER }}-Windows-x64.zip` : portable
+            - `Aseprite-${{ env.ASE_VER }}-Windows-x64-Setup.exe` : installer
+
+            **Note:** These builds are for personal use only. Please support the developers by purchasing Aseprite at https://www.aseprite.org/
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
