@@ -110,7 +110,7 @@ jobs:
           $out  = Join-Path $env:GITHUB_WORKSPACE 'build'
           cmake -S "$src" -B "$out" -G Ninja `
             -DCMAKE_BUILD_TYPE=RelWithDebInfo `
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" `
             -DLAF_BACKEND=skia `
             -DSKIA_DIR="$skia" `
             -DSKIA_LIBRARY_DIR="$skia\out\Release-x64" `
