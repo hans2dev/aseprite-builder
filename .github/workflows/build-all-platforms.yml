@@ -40,7 +40,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Enable Long Paths
         run: git config --system core.longpaths true
@@ -65,7 +65,24 @@ jobs:
           Write-Host "Skia extracted successfully"
 
       - name: Initialize MSVC Environment
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: |
+          # Native replacement for ilammy/msvc-dev-cmd (still on Node 20)
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio with MSVC x64 tools not found' }
+          Write-Host "Visual Studio: $vs"
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $vars = cmd /c "`"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=x64 -host_arch=x64 && set"
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd.bat failed' }
+          foreach ($line in $vars) {
+            if ($line -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          Write-Host 'MSVC x64 environment exported'
 
       - name: Configure Build
         shell: powershell
@@ -100,7 +117,7 @@ jobs:
           Compress-Archive -Path * -DestinationPath "$env:GITHUB_WORKSPACE\Aseprite-${{ needs.fetch-version.outputs.version }}-Windows.zip"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ needs.fetch-version.outputs.version }}-Windows
           path: Aseprite-${{ needs.fetch-version.outputs.version }}-Windows.zip
@@ -113,7 +130,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Dependencies
         run: |
@@ -203,7 +220,7 @@ jobs:
           dpkg-deb --build aseprite_deb Aseprite-${{ needs.fetch-version.outputs.version }}-Linux.deb
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ needs.fetch-version.outputs.version }}-Linux
           path: |
@@ -218,7 +235,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Dependencies
         run: |
@@ -263,7 +280,7 @@ jobs:
           zip -r $GITHUB_WORKSPACE/Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-arm64.zip Aseprite.app aseprite.ini
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-arm64
           path: Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-arm64.zip
@@ -276,7 +293,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Dependencies
         run: |
@@ -321,7 +338,7 @@ jobs:
           zip -r $GITHUB_WORKSPACE/Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-x64.zip Aseprite.app aseprite.ini
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-x64
           path: Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-x64.zip
@@ -335,12 +352,12 @@ jobs:
     if: success()
     steps:
       - name: Download All Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.fetch-version.outputs.version }}
           name: Aseprite ${{ needs.fetch-version.outputs.version }}

@@ -26,7 +26,7 @@ jobs:
       ASE_VER_INPUT: ${{ github.event.inputs.aseprite_version }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Enable Long Paths
         run: git config --system core.longpaths true
@@ -99,9 +99,24 @@ jobs:
           Write-Host 'Skia ready'
 
       - name: Initialize MSVC Environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+        shell: pwsh
+        run: |
+          # Native replacement for ilammy/msvc-dev-cmd (still on Node 20)
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio with MSVC x64 tools not found' }
+          Write-Host "Visual Studio: $vs"
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $vars = cmd /c "`"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=x64 -host_arch=x64 && set"
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd.bat failed' }
+          foreach ($line in $vars) {
+            if ($line -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          Write-Host 'MSVC x64 environment exported'
 
       - name: Configure (CMake)
         run: |
@@ -214,14 +229,14 @@ jobs:
           Get-ChildItem dist
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ env.ASE_VER }}-Windows-x64
           path: dist/*
 
       - name: Create GitHub Release
         if: ${{ github.event.inputs.create_release != 'false' }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.ASE_VER }}
           name: Aseprite ${{ env.ASE_VER }}
