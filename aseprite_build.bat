@@ -137,7 +137,10 @@ cmake -S "%ASEPRITE_DIR%" -B "%BUILD_DIR%" -G Ninja ^
     -DSKIA_LIBRARY_DIR="%SKIA_DIR%\out\Release-x64" ^
     -DSKIA_LIBRARY="%SKIA_DIR%\out\Release-x64\skia.lib" ^
     -DENABLE_UPDATER=OFF ^
-    -DENABLE_TESTS=OFF
+    -DENABLE_TESTS=OFF ^
+    -DENABLE_OPENSSL=OFF ^
+    -DLAF_WITH_EXAMPLES=OFF ^
+    -DLAF_WITH_TESTS=OFF
 if errorlevel 1 (echo [!] ERROR: CMake configuration failed & exit /b 1)
 echo.
 

@@ -80,6 +80,9 @@ jobs:
             -DSKIA_LIBRARY="$env:GITHUB_WORKSPACE\skia\out\Release-x64\skia.lib" `
             -DENABLE_UPDATER=OFF `
             -DENABLE_TESTS=OFF `
+            -DENABLE_OPENSSL=OFF `
+            -DLAF_WITH_EXAMPLES=OFF `
+            -DLAF_WITH_TESTS=OFF `
             "$env:GITHUB_WORKSPACE\aseprite"
           if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed" }
 
