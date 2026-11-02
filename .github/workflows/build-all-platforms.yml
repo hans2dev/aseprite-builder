@@ -40,7 +40,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Enable Long Paths
         run: git config --system core.longpaths true
@@ -55,16 +55,34 @@ jobs:
       - name: Download & Extract Skia
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Windows-Release-x64.zip" -OutFile "skia.zip" -UseBasicParsing
+          $ErrorActionPreference = 'Stop'
+          $tagFile = 'aseprite\laf\misc\skia-tag.txt'
+          $skiaTag = if (Test-Path $tagFile) { (Get-Content $tagFile -Raw).Trim() } else { 'm124-08a5439a6b' }
+          Write-Host "Skia tag: $skiaTag"
+          Invoke-WebRequest -Uri "https://github.com/aseprite/skia/releases/download/$skiaTag/Skia-Windows-Release-x64.zip" -OutFile "skia.zip" -UseBasicParsing
           Expand-Archive -Force "skia.zip" "skia"
-          
-          # Download icudtl.dat (required for ICU support)
-          mkdir skia\out\Release-x64 -Force
-          Invoke-WebRequest -Uri "https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/icudtl.dat" -OutFile "skia/out/Release-x64/icudtl.dat" -UseBasicParsing
-          Write-Host "Skia extracted successfully with icudtl.dat"
+          if (-not (Test-Path 'skia\out\Release-x64\skia.lib')) { throw 'skia.lib not found' }
+          Write-Host "Skia extracted successfully"
 
       - name: Initialize MSVC Environment
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: |
+          # Native replacement for ilammy/msvc-dev-cmd (still on Node 20)
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio with MSVC x64 tools not found' }
+          Write-Host "Visual Studio: $vs"
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          $vars = cmd /c "`"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=x64 -host_arch=x64 && set"
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd.bat failed' }
+          foreach ($line in $vars) {
+            if ($line -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          Write-Host 'MSVC x64 environment exported'
 
       - name: Configure Build
         shell: powershell
@@ -77,15 +95,19 @@ jobs:
             -DSKIA_DIR="$env:GITHUB_WORKSPACE\skia" `
             -DSKIA_LIBRARY_DIR="$env:GITHUB_WORKSPACE\skia\out\Release-x64" `
             -DSKIA_LIBRARY="$env:GITHUB_WORKSPACE\skia\out\Release-x64\skia.lib" `
-            -DENABLE_SCRIPTING=OFF `
             -DENABLE_UPDATER=OFF `
             -DENABLE_TESTS=OFF `
+            -DENABLE_OPENSSL=OFF `
+            -DLAF_WITH_EXAMPLES=OFF `
+            -DLAF_WITH_TESTS=OFF `
             "$env:GITHUB_WORKSPACE\aseprite"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed" }
 
       - name: Compile
         run: |
           cd build
-          ninja -j 4
+          ninja -j $env:NUMBER_OF_PROCESSORS
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
       - name: Create Portable Package
         shell: powershell
@@ -95,7 +117,7 @@ jobs:
           Compress-Archive -Path * -DestinationPath "$env:GITHUB_WORKSPACE\Aseprite-${{ needs.fetch-version.outputs.version }}-Windows.zip"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ needs.fetch-version.outputs.version }}-Windows
           path: Aseprite-${{ needs.fetch-version.outputs.version }}-Windows.zip
@@ -108,7 +130,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Dependencies
         run: |
@@ -124,9 +146,12 @@ jobs:
 
       - name: Download & Extract Skia
         run: |
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Linux-Release-x64-libstdc++.zip
-          unzip Skia-Linux-Release-x64-libstdc++.zip -d skia
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/icudtl.dat -O skia/out/Release-x64/icudtl.dat
+          set -euo pipefail
+          SKIA_TAG=$(tr -d '[:space:]' < aseprite/laf/misc/skia-tag.txt 2>/dev/null || echo m124-08a5439a6b)
+          echo "Skia tag: $SKIA_TAG"
+          curl -fsSL -o skia.zip "https://github.com/aseprite/skia/releases/download/$SKIA_TAG/Skia-Linux-Release-x64-libstdc++.zip"
+          unzip -q skia.zip -d skia
+          test -f skia/third_party/externals/icu/flutter/icudtl.dat || echo "::warning::icudtl.dat missing"
 
       - name: Configure Build
         run: |
@@ -195,7 +220,7 @@ jobs:
           dpkg-deb --build aseprite_deb Aseprite-${{ needs.fetch-version.outputs.version }}-Linux.deb
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ needs.fetch-version.outputs.version }}-Linux
           path: |
@@ -210,7 +235,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Dependencies
         run: |
@@ -222,9 +247,12 @@ jobs:
 
       - name: Download & Extract Skia
         run: |
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-arm64.zip
-          unzip Skia-macOS-Release-arm64.zip -d skia
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/icudtl.dat -O skia/out/Release-arm64/icudtl.dat
+          set -euo pipefail
+          SKIA_TAG=$(tr -d '[:space:]' < aseprite/laf/misc/skia-tag.txt 2>/dev/null || echo m124-08a5439a6b)
+          echo "Skia tag: $SKIA_TAG"
+          curl -fsSL -o skia.zip "https://github.com/aseprite/skia/releases/download/$SKIA_TAG/Skia-macOS-Release-arm64.zip"
+          unzip -q skia.zip -d skia
+          test -f skia/third_party/externals/icu/flutter/icudtl.dat || echo "::warning::icudtl.dat missing"
 
       - name: Configure Build
         run: |
@@ -252,7 +280,7 @@ jobs:
           zip -r $GITHUB_WORKSPACE/Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-arm64.zip Aseprite.app aseprite.ini
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-arm64
           path: Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-arm64.zip
@@ -265,7 +293,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Dependencies
         run: |
@@ -277,9 +305,12 @@ jobs:
 
       - name: Download & Extract Skia
         run: |
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-x64.zip
-          unzip Skia-macOS-Release-x64.zip -d skia
-          wget https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/icudtl.dat -O skia/out/Release-x64/icudtl.dat
+          set -euo pipefail
+          SKIA_TAG=$(tr -d '[:space:]' < aseprite/laf/misc/skia-tag.txt 2>/dev/null || echo m124-08a5439a6b)
+          echo "Skia tag: $SKIA_TAG"
+          curl -fsSL -o skia.zip "https://github.com/aseprite/skia/releases/download/$SKIA_TAG/Skia-macOS-Release-x64.zip"
+          unzip -q skia.zip -d skia
+          test -f skia/third_party/externals/icu/flutter/icudtl.dat || echo "::warning::icudtl.dat missing"
 
       - name: Configure Build
         run: |
@@ -307,7 +338,7 @@ jobs:
           zip -r $GITHUB_WORKSPACE/Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-x64.zip Aseprite.app aseprite.ini
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-x64
           path: Aseprite-${{ needs.fetch-version.outputs.version }}-macOS-x64.zip
@@ -321,12 +352,12 @@ jobs:
     if: success()
     steps:
       - name: Download All Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.fetch-version.outputs.version }}
           name: Aseprite ${{ needs.fetch-version.outputs.version }}
